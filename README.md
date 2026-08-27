@@ -50,7 +50,8 @@ through the UI lives only until the process exits.
 
 Both UIs list every model under **Schemas** (ReDoc) or **Schemas** at the bottom of the
 page (Swagger UI). `ContactCreate`, `ContactReplace` (PUT), `ContactUpdate` (PATCH),
-`ContactRead`, and `ContactPage` show exactly which fields are required, which are
+`ContactRead`, `ContactPage`, `AddressCreate`, and `AddressRead` show exactly
+which fields are required, which are
 nullable, and the validation rules — the same constraints described in
 [Contact fields](#contact-fields) below. Endpoints are grouped
 by the tags declared in `app/main.py`, and each documents its error responses (`404`,
@@ -108,10 +109,37 @@ also read):
 
 ```
 first_name, last_name, email, phone, company, job_title,
-address, city, state, postal_code, country, notes, photo
+addresses, notes, photo
 ```
 
 Responses add `id`, `full_name`, `created_at`, and `updated_at` (UTC).
+
+### Addresses
+
+A contact has **many** addresses, stored as rows in a separate `addresses` table
+with a foreign key back to the contact — not as scalar columns. Each address is
+typed `Home`, `Work`, or `Other`; any other value is rejected with `422`.
+
+```json
+{ "type": "Home", "address": "1 Market St, Suite 400",
+  "city": "San Francisco", "state": "CA", "postal_code": "94105", "country": "USA" }
+```
+
+`type` is required; every other field is optional. Responses add a server-assigned
+`id` to each address. There is no separate address endpoint — addresses are created,
+read, and modified through the contact they belong to.
+
+The collection is replaced as a unit, never merged per item:
+
+| Request | Effect on `addresses` |
+| --- | --- |
+| `PUT` with `addresses: [A, B]` | becomes exactly `[A, B]`; anything else is deleted |
+| `PUT` omitting `addresses` | cleared, like any other omitted field |
+| `PATCH` omitting `addresses` | left untouched |
+| `PATCH` with `addresses: [A]` | becomes exactly `[A]` |
+| `PATCH` with `addresses: []` | cleared |
+
+Deleting a contact deletes its addresses; no orphan rows are left behind.
 
 `photo` is a base64 `data:` URL stored inline in the database — there is no file
 store and no upload endpoint. JPEG, PNG, and WebP are accepted; anything else
@@ -156,6 +184,12 @@ curl "http://127.0.0.1:8000/api/v1/contacts?search=nasa&limit=10&sort_by=last_na
 curl -X PATCH http://127.0.0.1:8000/api/v1/contacts/1 \
   -H 'content-type: application/json' -d '{"phone":"+1-415-555-0000"}'
 
+# Replace the whole address collection
+curl -X PATCH http://127.0.0.1:8000/api/v1/contacts/1 \
+  -H 'content-type: application/json' \
+  -d '{"addresses":[{"type":"Home","city":"San Francisco","state":"CA"},
+                    {"type":"Work","city":"Arlington","state":"VA"}]}'
+
 # Set a photo (base64 data URL, JPEG/PNG/WebP, max 500 KB before encoding)
 curl -X PATCH http://127.0.0.1:8000/api/v1/contacts/1 \
   -H 'content-type: application/json' \
@@ -181,7 +215,7 @@ app/
   main.py             FastAPI app, lifespan startup, /health and /
   config.py           Environment-driven settings
   database.py         Engine, session factory, StaticPool in-memory wiring
-  models.py           Contact ORM model
+  models.py           Contact + Address ORM models (one-to-many)
   schemas.py          Pydantic request/response models
   crud.py             Database operations (search, sort, paginate)
   seed.py             Sample contacts for the in-memory default

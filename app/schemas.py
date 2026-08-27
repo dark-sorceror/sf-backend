@@ -2,6 +2,7 @@ import base64
 import binascii
 import re
 from datetime import datetime, timezone
+from enum import StrEnum
 from math import ceil
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, computed_field, field_validator
@@ -49,6 +50,65 @@ def _validate_photo(value: str | None) -> str | None:
     return value
 
 
+class AddressType(StrEnum):
+    """Which address this is. Sent and returned as these exact strings."""
+
+    HOME = "Home"
+    WORK = "Work"
+    OTHER = "Other"
+
+
+class AddressBase(BaseModel):
+    """Fields shared by every address request and response."""
+
+    type: AddressType = Field(
+        description="Which address this is. Required; one of `Home`, `Work`, or `Other`.",
+        examples=["Home"],
+    )
+    address: str | None = Field(
+        default=None,
+        max_length=300,
+        description="Street address, including unit or suite.",
+        examples=["1 Market St, Suite 400"],
+    )
+    city: str | None = Field(default=None, max_length=120, description="City or locality.", examples=["San Francisco"])
+    state: str | None = Field(
+        default=None,
+        max_length=120,
+        description="State, province, or region.",
+        examples=["CA"],
+    )
+    postal_code: str | None = Field(
+        default=None,
+        max_length=20,
+        description="Postal or ZIP code.",
+        examples=["94105"],
+    )
+    country: str | None = Field(default=None, max_length=120, description="Country name.", examples=["USA"])
+
+
+class AddressCreate(AddressBase):
+    """One address as supplied in a contact request body."""
+
+
+class AddressRead(AddressBase):
+    """One stored address, as nested in every contact response."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int = Field(description="Server-assigned identifier for this address.", examples=[1])
+
+
+_ADDRESS_EXAMPLE = {
+    "type": "Home",
+    "address": "1 Market St, Suite 400",
+    "city": "San Francisco",
+    "state": "CA",
+    "postal_code": "94105",
+    "country": "USA",
+}
+
+
 class ContactBase(BaseModel):
     """Fields shared by every contact request and response."""
 
@@ -90,26 +150,14 @@ class ContactBase(BaseModel):
         description="Role held at the company.",
         examples=["Mathematician"],
     )
-    address: str | None = Field(
-        default=None,
-        max_length=300,
-        description="Street address, including unit or suite.",
-        examples=["1 Market St, Suite 400"],
+    addresses: list[AddressCreate] = Field(
+        default_factory=list,
+        description=(
+            "Every address for this contact, each typed `Home`, `Work`, or `Other`. "
+            "A contact may have any number; omit or send `[]` for none."
+        ),
+        examples=[[_ADDRESS_EXAMPLE]],
     )
-    city: str | None = Field(default=None, max_length=120, description="City or locality.", examples=["San Francisco"])
-    state: str | None = Field(
-        default=None,
-        max_length=120,
-        description="State, province, or region.",
-        examples=["CA"],
-    )
-    postal_code: str | None = Field(
-        default=None,
-        max_length=20,
-        description="Postal or ZIP code.",
-        examples=["94105"],
-    )
-    country: str | None = Field(default=None, max_length=120, description="Country name.", examples=["USA"])
     notes: str | None = Field(
         default=None,
         description="Free-form notes about the contact. No length limit.",
@@ -138,11 +186,7 @@ _FULL_EXAMPLE = {
     "phone": "+1-415-555-0101",
     "company": "Analytical Engines",
     "job_title": "Mathematician",
-    "address": "1 Market St, Suite 400",
-    "city": "San Francisco",
-    "state": "CA",
-    "postal_code": "94105",
-    "country": "USA",
+    "addresses": [_ADDRESS_EXAMPLE],
     "notes": "Met at the SF hackathon.",
     "photo": _EXAMPLE_PHOTO,
 }
@@ -160,7 +204,9 @@ class ContactReplace(ContactBase):
     Body of `PUT /api/v1/contacts/{contact_id}`.
 
     This is a full replacement: any optional field you omit is set back to `null` —
-    `photo` included, so resend the contact's existing photo to keep it.
+    `photo` included, so resend the contact's existing photo to keep it. `addresses`
+    is replaced wholesale, so an address left out of the body is deleted and an
+    omitted `addresses` clears the collection.
     Use `PATCH` if you only want to change some fields.
     """
 
@@ -190,11 +236,14 @@ class ContactUpdate(BaseModel):
     phone: str | None = Field(default=None, max_length=40, description="New phone number.")
     company: str | None = Field(default=None, max_length=200, description="New company.")
     job_title: str | None = Field(default=None, max_length=200, description="New job title.")
-    address: str | None = Field(default=None, max_length=300, description="New street address.")
-    city: str | None = Field(default=None, max_length=120, description="New city.")
-    state: str | None = Field(default=None, max_length=120, description="New state or region.")
-    postal_code: str | None = Field(default=None, max_length=20, description="New postal code.")
-    country: str | None = Field(default=None, max_length=120, description="New country.")
+    addresses: list[AddressCreate] | None = Field(
+        default=None,
+        description=(
+            "Replaces the entire address collection. Omit to leave the current "
+            "addresses untouched; send `[]` to remove them all."
+        ),
+        examples=[[_ADDRESS_EXAMPLE]],
+    )
     notes: str | None = Field(default=None, description="New notes; replaces the existing text.")
     photo: str | None = Field(
         default=None,
@@ -218,6 +267,7 @@ class ContactRead(ContactBase):
                 {
                     **_FULL_EXAMPLE,
                     "id": 1,
+                    "addresses": [{**_ADDRESS_EXAMPLE, "id": 1}],
                     "full_name": "Ada Lovelace",
                     "created_at": "2026-08-19T16:22:58.189507Z",
                     "updated_at": "2026-08-19T16:22:58.189511Z",
@@ -234,6 +284,11 @@ class ContactRead(ContactBase):
     updated_at: datetime = Field(
         description="UTC timestamp of the last modification.",
         examples=["2026-08-19T16:22:58.189511Z"],
+    )
+    addresses: list[AddressRead] = Field(
+        default_factory=list,
+        description="Every stored address for this contact, each with its server-assigned `id`.",
+        examples=[[{**_ADDRESS_EXAMPLE, "id": 1}]],
     )
 
     @field_validator("created_at", "updated_at")
