@@ -1,3 +1,5 @@
+import base64
+import binascii
 import re
 from datetime import datetime, timezone
 from math import ceil
@@ -6,12 +8,17 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field, computed_field, fie
 
 PHOTO_MEDIA_TYPES = ("image/jpeg", "image/png", "image/webp")
 
-# The frontend caps uploads at 500 KB of source bytes. Base64 turns every 3 of
-# those into 4 characters, and the `data:` prefix adds a couple of dozen more.
+# The frontend caps uploads at 500 KB of source bytes. That limit is enforced
+# against the *decoded* payload; MAX_PHOTO_LENGTH is only a cheap pre-filter,
+# deliberately loose because the `data:` prefix varies in length by media type.
 MAX_PHOTO_SOURCE_BYTES = 500 * 1024
 MAX_PHOTO_LENGTH = ceil(MAX_PHOTO_SOURCE_BYTES / 3) * 4 + 64
 
-_PHOTO_DATA_URL = re.compile(rf"data:({'|'.join(PHOTO_MEDIA_TYPES)});base64,[A-Za-z0-9+/]+={{0,2}}")
+_PHOTO_DATA_URL = re.compile(
+    rf"data:({'|'.join(PHOTO_MEDIA_TYPES)});base64,(?P<data>[A-Za-z0-9+/]+={{0,2}})"
+)
+
+_PHOTO_TOO_LARGE = f"photo must be at most {MAX_PHOTO_SOURCE_BYTES // 1024} KB before encoding"
 
 _EXAMPLE_PHOTO = (
     "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
@@ -23,11 +30,22 @@ def _validate_photo(value: str | None) -> str | None:
     """Shared by every schema that accepts a photo. `None` always passes."""
     if value is None:
         return None
-    # Length first: it is the cheap check, and it bounds the work the regex does.
+    # Character length first: it is the cheap check, and it bounds the work the
+    # regex and the decode below can be asked to do.
     if len(value) > MAX_PHOTO_LENGTH:
-        raise ValueError(f"photo must be at most {MAX_PHOTO_SOURCE_BYTES // 1024} KB before encoding")
-    if _PHOTO_DATA_URL.fullmatch(value) is None:
+        raise ValueError(_PHOTO_TOO_LARGE)
+    match = _PHOTO_DATA_URL.fullmatch(value)
+    if match is None:
         raise ValueError(f"photo must be a base64 data URL of type: {', '.join(PHOTO_MEDIA_TYPES)}")
+    # The regex only constrains the alphabet, so decode strictly to enforce
+    # base64 quartet and padding rules, then hold the real limit against the
+    # decoded bytes rather than the approximate character count.
+    try:
+        decoded = base64.b64decode(match.group("data"), validate=True)
+    except binascii.Error as exc:
+        raise ValueError("photo is not valid base64") from exc
+    if len(decoded) > MAX_PHOTO_SOURCE_BYTES:
+        raise ValueError(_PHOTO_TOO_LARGE)
     return value
 
 

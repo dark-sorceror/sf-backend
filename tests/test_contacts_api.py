@@ -195,6 +195,21 @@ def test_create_rejects_photo_over_the_size_limit(client, payload):
     assert client.post(BASE, json={**payload, "photo": oversized}).status_code == 422
 
 
+@pytest.mark.parametrize("encoded", ["a", "AB", "abc", "AAAAA"])
+def test_create_rejects_malformed_base64_photo(client, payload, encoded):
+    # Right alphabet, impossible length: these are not decodable base64.
+    response = client.post(BASE, json={**payload, "photo": f"data:image/png;base64,{encoded}"})
+    assert response.status_code == 422
+
+
+def test_create_rejects_photo_just_over_the_size_limit(client, payload):
+    # 31 bytes over the cap -- small enough that the character-length pre-filter
+    # lets it through, so this pins the decoded-size check specifically.
+    encoded = base64.b64encode(b"\x00" * (500 * 1024 + 31)).decode()
+    response = client.post(BASE, json={**payload, "photo": f"data:image/png;base64,{encoded}"})
+    assert response.status_code == 422
+
+
 def test_create_accepts_photo_at_the_size_limit(client, payload):
     # 500 KB of source bytes is exactly what the frontend lets through.
     encoded = base64.b64encode(b"\x00" * (500 * 1024)).decode()
