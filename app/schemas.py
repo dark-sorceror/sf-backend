@@ -1,6 +1,52 @@
+import base64
+import binascii
+import re
 from datetime import datetime, timezone
+from math import ceil
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, computed_field, field_validator
+
+PHOTO_MEDIA_TYPES = ("image/jpeg", "image/png", "image/webp")
+
+# The frontend caps uploads at 500 KB of source bytes. That limit is enforced
+# against the *decoded* payload; MAX_PHOTO_LENGTH is only a cheap pre-filter,
+# deliberately loose because the `data:` prefix varies in length by media type.
+MAX_PHOTO_SOURCE_BYTES = 500 * 1024
+MAX_PHOTO_LENGTH = ceil(MAX_PHOTO_SOURCE_BYTES / 3) * 4 + 64
+
+_PHOTO_DATA_URL = re.compile(
+    rf"data:({'|'.join(PHOTO_MEDIA_TYPES)});base64,(?P<data>[A-Za-z0-9+/]+={{0,2}})"
+)
+
+_PHOTO_TOO_LARGE = f"photo must be at most {MAX_PHOTO_SOURCE_BYTES // 1024} KB before encoding"
+
+_EXAMPLE_PHOTO = (
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
+    "AAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+)
+
+
+def _validate_photo(value: str | None) -> str | None:
+    """Shared by every schema that accepts a photo. `None` always passes."""
+    if value is None:
+        return None
+    # Character length first: it is the cheap check, and it bounds the work the
+    # regex and the decode below can be asked to do.
+    if len(value) > MAX_PHOTO_LENGTH:
+        raise ValueError(_PHOTO_TOO_LARGE)
+    match = _PHOTO_DATA_URL.fullmatch(value)
+    if match is None:
+        raise ValueError(f"photo must be a base64 data URL of type: {', '.join(PHOTO_MEDIA_TYPES)}")
+    # The regex only constrains the alphabet, so decode strictly to enforce
+    # base64 quartet and padding rules, then hold the real limit against the
+    # decoded bytes rather than the approximate character count.
+    try:
+        decoded = base64.b64decode(match.group("data"), validate=True)
+    except binascii.Error as exc:
+        raise ValueError("photo is not valid base64") from exc
+    if len(decoded) > MAX_PHOTO_SOURCE_BYTES:
+        raise ValueError(_PHOTO_TOO_LARGE)
+    return value
 
 
 class ContactBase(BaseModel):
@@ -69,6 +115,20 @@ class ContactBase(BaseModel):
         description="Free-form notes about the contact. No length limit.",
         examples=["Met at the SF hackathon."],
     )
+    photo: str | None = Field(
+        default=None,
+        description=(
+            "Profile photo as a base64 `data:` URL. JPEG, PNG, and WebP are accepted; "
+            f"the image must be at most {MAX_PHOTO_SOURCE_BYTES // 1024} KB before encoding. "
+            "`null` means the contact has no photo."
+        ),
+        examples=[_EXAMPLE_PHOTO],
+    )
+
+    @field_validator("photo")
+    @classmethod
+    def _check_photo(cls, value: str | None) -> str | None:
+        return _validate_photo(value)
 
 
 _FULL_EXAMPLE = {
@@ -84,6 +144,7 @@ _FULL_EXAMPLE = {
     "postal_code": "94105",
     "country": "USA",
     "notes": "Met at the SF hackathon.",
+    "photo": _EXAMPLE_PHOTO,
 }
 _MINIMAL_EXAMPLE = {"first_name": "Grace", "last_name": "Hopper", "email": "grace@example.com"}
 
@@ -98,7 +159,8 @@ class ContactReplace(ContactBase):
     """
     Body of `PUT /api/v1/contacts/{contact_id}`.
 
-    This is a full replacement: any optional field you omit is set back to `null`.
+    This is a full replacement: any optional field you omit is set back to `null` —
+    `photo` included, so resend the contact's existing photo to keep it.
     Use `PATCH` if you only want to change some fields.
     """
 
@@ -134,6 +196,16 @@ class ContactUpdate(BaseModel):
     postal_code: str | None = Field(default=None, max_length=20, description="New postal code.")
     country: str | None = Field(default=None, max_length=120, description="New country.")
     notes: str | None = Field(default=None, description="New notes; replaces the existing text.")
+    photo: str | None = Field(
+        default=None,
+        description="New profile photo as a base64 `data:` URL. Send `null` to remove the current photo.",
+        examples=[_EXAMPLE_PHOTO],
+    )
+
+    @field_validator("photo")
+    @classmethod
+    def _check_photo(cls, value: str | None) -> str | None:
+        return _validate_photo(value)
 
 
 class ContactRead(ContactBase):

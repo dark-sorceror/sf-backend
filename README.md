@@ -108,10 +108,16 @@ also read):
 
 ```
 first_name, last_name, email, phone, company, job_title,
-address, city, state, postal_code, country, notes
+address, city, state, postal_code, country, notes, photo
 ```
 
 Responses add `id`, `full_name`, `created_at`, and `updated_at` (UTC).
+
+`photo` is a base64 `data:` URL stored inline in the database — there is no file
+store and no upload endpoint. JPEG, PNG, and WebP are accepted; anything else
+(including SVG) is rejected with `422`, as is an image larger than 500 KB before
+encoding. Because `PUT` is a full replacement, a `PUT` body that omits `photo`
+clears it — resend the existing value to keep it, or use `PATCH`.
 
 ### List query parameters
 
@@ -149,6 +155,11 @@ curl "http://127.0.0.1:8000/api/v1/contacts?search=nasa&limit=10&sort_by=last_na
 # Partial update
 curl -X PATCH http://127.0.0.1:8000/api/v1/contacts/1 \
   -H 'content-type: application/json' -d '{"phone":"+1-415-555-0000"}'
+
+# Set a photo (base64 data URL, JPEG/PNG/WebP, max 500 KB before encoding)
+curl -X PATCH http://127.0.0.1:8000/api/v1/contacts/1 \
+  -H 'content-type: application/json' \
+  -d "{\"photo\":\"data:image/png;base64,$(base64 < avatar.png | tr -d '\n')\"}"
 
 # Delete
 curl -X DELETE http://127.0.0.1:8000/api/v1/contacts/1
