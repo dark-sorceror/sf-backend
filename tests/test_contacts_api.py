@@ -399,6 +399,36 @@ def test_patch_with_empty_addresses_clears_them(client, payload):
     assert _stored_address_count() == 0
 
 
+def test_patch_with_null_addresses_clears_them(client, payload):
+    contact_id = client.post(BASE, json={**payload, "addresses": [HOME, WORK]}).json()["id"]
+    response = client.patch(f"{BASE}/{contact_id}", json={"addresses": None})
+    assert response.status_code == 200
+    assert response.json()["addresses"] == []  # explicit null clears, like every other field
+    assert _stored_address_count() == 0
+
+
+def test_address_only_patch_advances_updated_at(client, payload):
+    created = client.post(BASE, json={**payload, "addresses": [HOME]}).json()
+    response = client.patch(f"{BASE}/{created['id']}", json={"addresses": [HOME, WORK]})
+    assert response.status_code == 200
+    # `updated_at` has a column-level onupdate that child-only writes cannot trigger.
+    assert response.json()["updated_at"] > created["updated_at"]
+
+
+def test_clearing_addresses_advances_updated_at(client, payload):
+    created = client.post(BASE, json={**payload, "addresses": [HOME, WORK]}).json()
+    response = client.patch(f"{BASE}/{created['id']}", json={"addresses": []})
+    assert response.status_code == 200
+    assert response.json()["updated_at"] > created["updated_at"]
+
+
+def test_put_replacing_only_addresses_advances_updated_at(client, payload):
+    created = client.post(BASE, json={**payload, "addresses": [HOME]}).json()
+    response = client.put(f"{BASE}/{created['id']}", json={**payload, "addresses": [WORK]})
+    assert response.status_code == 200
+    assert response.json()["updated_at"] > created["updated_at"]
+
+
 def test_deleting_a_contact_removes_its_addresses(client, payload):
     contact_id = client.post(BASE, json={**payload, "addresses": [HOME, WORK]}).json()["id"]
     assert _stored_address_count() == 2

@@ -51,6 +51,15 @@ class Contact(Base):
         nullable=False,
     )
 
+    def touch(self) -> None:
+        """Advance `updated_at` when only child rows changed.
+
+        `updated_at` uses a column-level `onupdate`, which fires only when the
+        contact row itself takes part in an UPDATE. Replacing the address
+        collection writes to `addresses` alone, so the parent is marked here.
+        """
+        self.updated_at = _utcnow()
+
     @property
     def full_name(self) -> str:
         return f"{self.first_name} {self.last_name}".strip()

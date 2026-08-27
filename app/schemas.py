@@ -240,7 +240,7 @@ class ContactUpdate(BaseModel):
         default=None,
         description=(
             "Replaces the entire address collection. Omit to leave the current "
-            "addresses untouched; send `[]` to remove them all."
+            "addresses untouched; send `[]` or `null` to remove them all."
         ),
         examples=[[_ADDRESS_EXAMPLE]],
     )

@@ -137,7 +137,7 @@ The collection is replaced as a unit, never merged per item:
 | `PUT` omitting `addresses` | cleared, like any other omitted field |
 | `PATCH` omitting `addresses` | left untouched |
 | `PATCH` with `addresses: [A]` | becomes exactly `[A]` |
-| `PATCH` with `addresses: []` | cleared |
+| `PATCH` with `addresses: []` or `null` | cleared |
 
 Deleting a contact deletes its addresses; no orphan rows are left behind.
 

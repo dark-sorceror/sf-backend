@@ -84,6 +84,7 @@ def replace_contact(db: Session, contact: Contact, payload: ContactReplace) -> C
         setattr(contact, field, _normalize_email(value) if field == "email" else value)
     # Full replacement: delete-orphan deletes whatever is no longer in the list.
     contact.addresses = _to_addresses(addresses)
+    contact.touch()
     db.commit()
     db.refresh(contact)
     return contact
@@ -91,12 +92,16 @@ def replace_contact(db: Session, contact: Contact, payload: ContactReplace) -> C
 
 def update_contact(db: Session, contact: Contact, payload: ContactUpdate) -> Contact:
     data = payload.model_dump(exclude_unset=True)
-    # Absent means "leave the collection alone"; a list (including []) replaces it.
+    # Only an absent key leaves the collection alone. A supplied value replaces
+    # it -- and `null`, like `[]`, clears it, matching how PATCH treats every
+    # other field.
+    replaces_addresses = "addresses" in data
     addresses = data.pop("addresses", None)
     for field, value in data.items():
         setattr(contact, field, _normalize_email(value) if field == "email" else value)
-    if addresses is not None:
-        contact.addresses = _to_addresses(addresses)
+    if replaces_addresses:
+        contact.addresses = _to_addresses(addresses or [])
+        contact.touch()
     db.commit()
     db.refresh(contact)
     return contact
