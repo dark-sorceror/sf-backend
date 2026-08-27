@@ -1,8 +1,36 @@
 import base64
 
 import pytest
+from sqlalchemy import text
+
+from app.database import engine
 
 BASE = "/api/v1/contacts"
+
+HOME = {
+    "type": "Home",
+    "address": "1 Market St, Suite 400",
+    "city": "San Francisco",
+    "state": "CA",
+    "postal_code": "94105",
+    "country": "USA",
+}
+WORK = {"type": "Work", "address": "500 Terry Francois Blvd", "city": "San Francisco", "postal_code": "94158"}
+OTHER = {"type": "Other", "address": "PO Box 12", "city": "Reno", "state": "NV"}
+
+
+def _types(body: dict) -> list[str]:
+    return [address["type"] for address in body["addresses"]]
+
+
+def _address_ids(body: dict) -> list[int]:
+    return [address["id"] for address in body["addresses"]]
+
+
+def _stored_address_count() -> int:
+    """Orphaned child rows are invisible over HTTP, so read the table directly."""
+    with engine.connect() as conn:
+        return conn.execute(text("SELECT COUNT(*) FROM addresses")).scalar_one()
 
 # The smallest real image of each accepted type, encoded the way a browser's
 # FileReader would hand it to the frontend.
@@ -258,3 +286,168 @@ def test_put_omitting_photo_clears_it(client, payload):
     response = client.put(f"{BASE}/{contact_id}", json=payload)  # `payload` carries no photo
     assert response.status_code == 200
     assert response.json()["photo"] is None  # PUT is a full replacement, photo included
+
+
+def test_create_contact_with_no_addresses(client, payload):
+    response = client.post(BASE, json=payload)
+    assert response.status_code == 201
+    assert response.json()["addresses"] == []
+
+
+def test_create_contact_with_one_home_address(client, payload):
+    response = client.post(BASE, json={**payload, "addresses": [HOME]})
+    assert response.status_code == 201
+    addresses = response.json()["addresses"]
+    assert len(addresses) == 1
+    assert addresses[0]["type"] == "Home"
+    assert addresses[0]["city"] == "San Francisco"
+    assert addresses[0]["id"] > 0
+
+
+def test_create_contact_with_multiple_addresses(client, payload):
+    response = client.post(BASE, json={**payload, "addresses": [HOME, WORK, OTHER]})
+    assert response.status_code == 201
+    assert _types(response.json()) == ["Home", "Work", "Other"]
+    assert len(set(_address_ids(response.json()))) == 3
+
+
+def test_get_returns_all_addresses(client, payload):
+    contact_id = client.post(BASE, json={**payload, "addresses": [HOME, WORK]}).json()["id"]
+    body = client.get(f"{BASE}/{contact_id}").json()
+    assert _types(body) == ["Home", "Work"]
+    assert body["addresses"][1]["postal_code"] == "94158"
+    assert body["addresses"][1]["state"] is None
+
+
+def test_list_includes_nested_addresses(client, payload):
+    client.post(BASE, json={**payload, "addresses": [HOME]})
+    items = client.get(BASE).json()["items"]
+    assert _types(items[0]) == ["Home"]
+
+
+@pytest.mark.parametrize("address_type", ["Home", "Work", "Other"])
+def test_every_address_type_is_accepted(client, payload, address_type):
+    response = client.post(BASE, json={**payload, "addresses": [{**HOME, "type": address_type}]})
+    assert response.status_code == 201
+    assert response.json()["addresses"][0]["type"] == address_type
+
+
+@pytest.mark.parametrize("address_type", ["home", "HOME", "Business", "", None, 1])
+def test_invalid_address_type_is_rejected(client, payload, address_type):
+    response = client.post(BASE, json={**payload, "addresses": [{**HOME, "type": address_type}]})
+    assert response.status_code == 422
+
+
+def test_address_type_is_required(client, payload):
+    response = client.post(BASE, json={**payload, "addresses": [{"city": "San Francisco"}]})
+    assert response.status_code == 422
+
+
+def test_put_replaces_the_whole_address_collection(client, payload):
+    created = client.post(BASE, json={**payload, "addresses": [HOME, WORK]}).json()
+    contact_id = created["id"]
+
+    response = client.put(f"{BASE}/{contact_id}", json={**payload, "addresses": [OTHER]})
+    assert response.status_code == 200
+    body = response.json()
+    assert _types(body) == ["Other"]
+    # New rows, not the old ones edited in place.
+    assert not set(_address_ids(body)) & set(_address_ids(created))
+    assert _types(client.get(f"{BASE}/{contact_id}").json()) == ["Other"]
+    assert _stored_address_count() == 1  # the two originals are gone, not orphaned
+
+
+def test_put_dropping_an_address_removes_it(client, payload):
+    contact_id = client.post(BASE, json={**payload, "addresses": [HOME, WORK]}).json()["id"]
+    response = client.put(f"{BASE}/{contact_id}", json={**payload, "addresses": [HOME]})
+    assert response.status_code == 200
+    assert _types(response.json()) == ["Home"]
+    assert _stored_address_count() == 1
+
+
+def test_put_omitting_addresses_clears_them(client, payload):
+    contact_id = client.post(BASE, json={**payload, "addresses": [HOME, WORK]}).json()["id"]
+    response = client.put(f"{BASE}/{contact_id}", json=payload)  # `payload` carries no addresses
+    assert response.status_code == 200
+    assert response.json()["addresses"] == []  # PUT is a full replacement
+    assert _stored_address_count() == 0
+
+
+def test_patch_omitting_addresses_preserves_them(client, payload):
+    created = client.post(BASE, json={**payload, "addresses": [HOME, WORK]}).json()
+    response = client.patch(f"{BASE}/{created['id']}", json={"job_title": "Chief Engineer"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["job_title"] == "Chief Engineer"
+    assert _address_ids(body) == _address_ids(created)  # same rows, untouched
+
+
+def test_patch_with_addresses_replaces_the_collection(client, payload):
+    contact_id = client.post(BASE, json={**payload, "addresses": [HOME, WORK]}).json()["id"]
+    response = client.patch(f"{BASE}/{contact_id}", json={"addresses": [OTHER]})
+    assert response.status_code == 200
+    assert _types(response.json()) == ["Other"]
+    assert _stored_address_count() == 1
+
+
+def test_patch_with_empty_addresses_clears_them(client, payload):
+    contact_id = client.post(BASE, json={**payload, "addresses": [HOME, WORK]}).json()["id"]
+    response = client.patch(f"{BASE}/{contact_id}", json={"addresses": []})
+    assert response.status_code == 200
+    assert response.json()["addresses"] == []
+    assert client.get(f"{BASE}/{contact_id}").json()["addresses"] == []
+    assert _stored_address_count() == 0
+
+
+def test_patch_with_null_addresses_clears_them(client, payload):
+    contact_id = client.post(BASE, json={**payload, "addresses": [HOME, WORK]}).json()["id"]
+    response = client.patch(f"{BASE}/{contact_id}", json={"addresses": None})
+    assert response.status_code == 200
+    assert response.json()["addresses"] == []  # explicit null clears, like every other field
+    assert _stored_address_count() == 0
+
+
+def test_address_only_patch_advances_updated_at(client, payload):
+    created = client.post(BASE, json={**payload, "addresses": [HOME]}).json()
+    response = client.patch(f"{BASE}/{created['id']}", json={"addresses": [HOME, WORK]})
+    assert response.status_code == 200
+    # `updated_at` has a column-level onupdate that child-only writes cannot trigger.
+    assert response.json()["updated_at"] > created["updated_at"]
+
+
+def test_clearing_addresses_advances_updated_at(client, payload):
+    created = client.post(BASE, json={**payload, "addresses": [HOME, WORK]}).json()
+    response = client.patch(f"{BASE}/{created['id']}", json={"addresses": []})
+    assert response.status_code == 200
+    assert response.json()["updated_at"] > created["updated_at"]
+
+
+def test_put_replacing_only_addresses_advances_updated_at(client, payload):
+    created = client.post(BASE, json={**payload, "addresses": [HOME]}).json()
+    response = client.put(f"{BASE}/{created['id']}", json={**payload, "addresses": [WORK]})
+    assert response.status_code == 200
+    assert response.json()["updated_at"] > created["updated_at"]
+
+
+def test_deleting_a_contact_removes_its_addresses(client, payload):
+    contact_id = client.post(BASE, json={**payload, "addresses": [HOME, WORK]}).json()["id"]
+    assert _stored_address_count() == 2
+    assert client.delete(f"{BASE}/{contact_id}").status_code == 204
+    assert _stored_address_count() == 0  # no orphan child rows
+
+
+def test_photo_and_addresses_coexist(client, payload):
+    created = client.post(BASE, json={**payload, "photo": PNG_PHOTO, "addresses": [HOME, WORK]}).json()
+    contact_id = created["id"]
+    assert created["photo"] == PNG_PHOTO
+    assert _types(created) == ["Home", "Work"]
+
+    # Replacing addresses must not disturb the photo...
+    patched = client.patch(f"{BASE}/{contact_id}", json={"addresses": [OTHER]}).json()
+    assert patched["photo"] == PNG_PHOTO
+    assert _types(patched) == ["Other"]
+
+    # ...nor the reverse.
+    patched = client.patch(f"{BASE}/{contact_id}", json={"photo": None}).json()
+    assert patched["photo"] is None
+    assert _types(patched) == ["Other"]

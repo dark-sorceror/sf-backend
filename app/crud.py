@@ -1,7 +1,7 @@
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from app.models import Contact
+from app.models import Address, Contact
 from app.schemas import ContactCreate, ContactReplace, ContactUpdate
 
 SORTABLE_FIELDS = ("id", "first_name", "last_name", "email", "company", "created_at", "updated_at")
@@ -9,6 +9,11 @@ SORTABLE_FIELDS = ("id", "first_name", "last_name", "email", "company", "created
 
 def _normalize_email(email: str) -> str:
     return email.strip().lower()
+
+
+def _to_addresses(dumped: list[dict]) -> list[Address]:
+    """Build ORM children from the dicts `model_dump()` produced for `addresses`."""
+    return [Address(**item) for item in dumped]
 
 
 def get_contact(db: Session, contact_id: int) -> Contact | None:
@@ -61,8 +66,11 @@ def list_contacts(
 
 def create_contact(db: Session, payload: ContactCreate) -> Contact:
     data = payload.model_dump()
+    # `addresses` is a relationship, not a column: build the ORM children
+    # explicitly instead of letting raw dicts reach Contact(**data).
+    addresses = data.pop("addresses")
     data["email"] = _normalize_email(data["email"])
-    contact = Contact(**data)
+    contact = Contact(**data, addresses=_to_addresses(addresses))
     db.add(contact)
     db.commit()
     db.refresh(contact)
@@ -70,16 +78,30 @@ def create_contact(db: Session, payload: ContactCreate) -> Contact:
 
 
 def replace_contact(db: Session, contact: Contact, payload: ContactReplace) -> Contact:
-    for field, value in payload.model_dump().items():
+    data = payload.model_dump()
+    addresses = data.pop("addresses")
+    for field, value in data.items():
         setattr(contact, field, _normalize_email(value) if field == "email" else value)
+    # Full replacement: delete-orphan deletes whatever is no longer in the list.
+    contact.addresses = _to_addresses(addresses)
+    contact.touch()
     db.commit()
     db.refresh(contact)
     return contact
 
 
 def update_contact(db: Session, contact: Contact, payload: ContactUpdate) -> Contact:
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    data = payload.model_dump(exclude_unset=True)
+    # Only an absent key leaves the collection alone. A supplied value replaces
+    # it -- and `null`, like `[]`, clears it, matching how PATCH treats every
+    # other field.
+    replaces_addresses = "addresses" in data
+    addresses = data.pop("addresses", None)
+    for field, value in data.items():
         setattr(contact, field, _normalize_email(value) if field == "email" else value)
+    if replaces_addresses:
+        contact.addresses = _to_addresses(addresses or [])
+        contact.touch()
     db.commit()
     db.refresh(contact)
     return contact
